@@ -1,0 +1,117 @@
+from typing import Callable, Optional
+
+import torch
+import torch.nn as nn
+'''from fairseq import utils
+from fairseq.modules import LayerNorm
+from fairseq.modules.fairseq_dropout import FairseqDropout
+from fairseq.modules.quant_noise import quant_noise'''
+
+from multihead_attention import MultiheadAttention
+
+
+class GraphormerGraphEncoderLayer(nn.Module):
+    def __init__(
+        self,
+        embedding_dim: int = 64,  # 原先768
+        ffn_embedding_dim: int = 128,  # 原先3072
+        num_attention_heads: int = 8,
+        dropout: float = 0.1,
+        attention_dropout: float = 0.1,
+        activation_dropout: float = 0.1,
+        pre_layernorm: bool = False,
+    ) -> None:
+        super().__init__()
+
+        # Initialize parameters
+        self.embedding_dim = embedding_dim
+        self.num_attention_heads = num_attention_heads
+        self.attention_dropout = attention_dropout
+        self.pre_layernorm = pre_layernorm
+
+        self.dropout_module = nn.Dropout(dropout)
+
+        '''self.activation_dropout_module = FairseqDropout(
+            activation_dropout, module_name=self.__class__.__name__  可能需要拆开？
+        )'''
+
+        # Initialize blocks
+
+        self.self_attn = self.build_self_attention(
+            self.embedding_dim,
+            num_attention_heads,
+            dropout=attention_dropout,
+        )
+
+        # layer norm associated with the self attention layer
+        self.self_attn_layer_norm = nn.LayerNorm(self.embedding_dim)
+
+        self.fc1 = self.build_fc1(
+            self.embedding_dim,
+            ffn_embedding_dim,
+        )
+
+        self.activation_fn = nn.ReLU()
+
+        self.activation_dropout_module = nn.Dropout(activation_dropout)
+
+        self.fc2 = self.build_fc2(
+            ffn_embedding_dim,
+            self.embedding_dim,
+        )
+
+        # layer norm associated with the position wise feed-forward NN
+        self.final_layer_norm = nn.LayerNorm(self.embedding_dim)
+
+    def build_fc1(self, input_dim, output_dim):
+        return nn.Linear(input_dim, output_dim)
+
+    def build_fc2(self, input_dim, output_dim):
+        return nn.Linear(input_dim, output_dim)
+
+    def build_self_attention(  # 返回多头注意力的实例对象
+        self,
+        embed_dim,
+        num_attention_heads,
+        dropout
+    ):
+        return MultiheadAttention(
+            embed_dim,
+            num_attention_heads,
+            dropout=dropout
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,  # batch_size * (len + 1) * embedding
+        self_attn_bias: Optional[torch.Tensor] = None,  # batch_size * num_nodes * num_nodes * num_nodes
+        self_attn_padding_mask: Optional[torch.Tensor] = None  # batch_size * (num_node + 1) * 1
+    ):
+        """
+        LayerNorm is applied either before or after the self-attention/ffn
+        modules similar to the original Transformer implementation.
+        """
+        # x: T x B x C
+        residual = x
+        x = self.self_attn_layer_norm(x)
+        x = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            attn_bias=self_attn_bias,
+            key_padding_mask=self_attn_padding_mask
+        )  # (num_node+1) * batch_size * embed_dim
+        x = self.dropout_module(x)
+        x = residual + x
+
+        residual = x
+        if self.pre_layernorm:
+            x = self.final_layer_norm(x)
+        x = self.activation_fn(self.fc1(x))
+        x = self.activation_dropout_module(x)
+        x = self.fc2(x)
+        x = self.dropout_module(x)
+        x = residual + x
+        if not self.pre_layernorm:
+            x = self.final_layer_norm(x)
+        return x
